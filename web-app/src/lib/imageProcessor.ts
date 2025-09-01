@@ -150,18 +150,23 @@ export class ImageProcessor {
       processed = this.applyGaussianBlur(processed, filters.blur);
     }
     
-    // 2. Apply morphological opening (erosion followed by dilation) - removes noise
+    // 2. Optional threshold to binarize before morphology
+    if (filters.threshold !== null) {
+      processed = this.applyThreshold(processed, filters.threshold);
+    }
+
+    // 3. Apply morphological opening (erosion followed by dilation) - removes noise
     if (filters.opening > 0) {
       processed = this.applyMorphology(processed, 'erosion', filters.opening);
       processed = this.applyMorphology(processed, 'dilation', filters.opening);
     }
     
-    // 3. Apply dilation (expand white areas - make obstacles thicker)
+    // 4. Apply dilation (expand white areas - make obstacles thicker)
     if (filters.dilation > 0) {
       processed = this.applyMorphology(processed, 'dilation', filters.dilation);
     }
     
-    // 4. Apply erosion (shrink white areas - make obstacles thinner)
+    // 5. Apply erosion (shrink white areas - make obstacles thinner)
     if (filters.erosion > 0) {
       processed = this.applyMorphology(processed, 'erosion', filters.erosion);
     }

@@ -12,6 +12,10 @@ export interface FilterSettings {
   dilation: number;
   erosion: number;
   opening: number;
+  /**
+   * Threshold in [0,1]. If null, thresholding is disabled.
+   */
+  threshold: number | null;
 }
 
 export interface MapData {

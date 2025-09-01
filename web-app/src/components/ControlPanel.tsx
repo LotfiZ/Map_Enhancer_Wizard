@@ -35,6 +35,39 @@ export function ControlPanel({
 
         <div className="border-t pt-6">
           <div className="space-y-6">
+            {/* Threshold */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium text-gray-700">
+                  Threshold
+                </label>
+                <span className="text-xs text-gray-500">
+                  {filters.threshold === null ? 'Off' : filters.threshold.toFixed(2)}
+                </span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <button
+                  className="px-2 py-1 text-xs rounded border"
+                  onClick={() => onFiltersChange({ ...filters, threshold: filters.threshold === null ? 0.50 : null })}
+                  disabled={isProcessing}
+                >
+                  {filters.threshold === null ? 'Enable' : 'Disable'}
+                </button>
+                <div className="flex-1">
+                  <Slider
+                    value={filters.threshold ?? 0.5}
+                    onValueChange={(value) => updateFilter('threshold', value)}
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    disabled={isProcessing || filters.threshold === null}
+                  />
+                </div>
+              </div>
+              <p className="text-xs text-gray-500">
+                Binarize map before morphology (0..1)
+              </p>
+            </div>
             {/* Blur */}
             <div className="space-y-2">
               <div className="flex items-center justify-between">

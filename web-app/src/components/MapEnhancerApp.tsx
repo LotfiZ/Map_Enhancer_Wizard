@@ -1,5 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import { MapData, FilterSettings, ProcessingState, MapMetadata } from '@/types/map';
+import YAML from 'yaml';
 import { MapCanvas } from '@/components/MapCanvas';
 import { ControlPanel } from '@/components/ControlPanel';
 
@@ -15,7 +16,8 @@ export default function MapEnhancerApp() {
     blur: 0,
     dilation: 0,
     erosion: 0,
-    opening: 0
+    opening: 0,
+    threshold: null
   });
 
   const [processingState, setProcessingState] = useState<ProcessingState>({
@@ -49,12 +51,12 @@ export default function MapEnhancerApp() {
         throw new Error('Please select both PGM and YAML files');
       }
 
-      // Parse YAML metadata
+      // Parse YAML metadata (robust)
       const yamlText = await yamlFile.text();
-      const metadata: MapMetadata = parseYaml(yamlText);
+      const metadata: MapMetadata = YAML.parse(yamlText);
 
-      // Load PGM image
-      const imageData = await loadPGMImage(pgmFile);
+      // Load PGM image with metadata awareness (negate, maxVal handling)
+      const imageData = await loadPGMImage(pgmFile, metadata);
 
       setMapData({
         originalImage: imageData,
@@ -73,66 +75,103 @@ export default function MapEnhancerApp() {
     }
   }, []);
 
-  const loadPGMImage = async (file: File): Promise<ImageData> => {
+  const loadPGMImage = async (file: File, metadata?: MapMetadata): Promise<ImageData> => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = (e) => {
         try {
           const arrayBuffer = e.target?.result as ArrayBuffer;
           const uint8Array = new Uint8Array(arrayBuffer);
-          
-          // Parse PGM header
-          let offset = 0;
           const decoder = new TextDecoder();
-          
-          // Read header line by line
-          let headerComplete = false;
-          let width = 0;
-          let height = 0;
-          let maxVal = 255;
-          let headerLines = 0;
-          
-          while (!headerComplete && offset < uint8Array.length) {
-            let lineEnd = offset;
-            while (lineEnd < uint8Array.length && uint8Array[lineEnd] !== 10) { // \n
-              lineEnd++;
+
+          // Helper to read tokens skipping comments and whitespace
+          const readHeaderTokens = (): { tokens: string[]; offset: number } => {
+            let off = 0;
+            const tokens: string[] = [];
+            let lineStart = 0;
+            while (tokens.length < 4 && off < uint8Array.length) {
+              let lineEnd = off;
+              while (lineEnd < uint8Array.length && uint8Array[lineEnd] !== 10 /*\n*/) {
+                lineEnd++;
+              }
+              const line = decoder.decode(uint8Array.slice(off, lineEnd)).trim();
+              if (!line.startsWith('#') && line.length > 0) {
+                for (const t of line.split(/\s+/)) {
+                  if (t.length) tokens.push(t);
+                }
+              }
+              off = lineEnd + 1;
+              lineStart = off;
             }
-            
-            const line = decoder.decode(uint8Array.slice(offset, lineEnd)).trim();
-            
-            if (line.startsWith('#')) {
-              // Comment line, skip
-            } else if (headerLines === 0 && line === 'P5') {
-              // Magic number
-              headerLines++;
-            } else if (headerLines === 1) {
-              // Width and height
-              const [w, h] = line.split(' ').map(Number);
-              width = w;
-              height = h;
-              headerLines++;
-            } else if (headerLines === 2) {
-              // Max value
-              maxVal = Number(line);
-              headerComplete = true;
-            }
-            
-            offset = lineEnd + 1;
+            return { tokens, offset: lineStart };
+          };
+
+          const { tokens, offset: afterHeaderOffsetStart } = readHeaderTokens();
+          if (tokens.length < 4) throw new Error('Invalid PGM header');
+          const magic = tokens[0];
+          const width = Number(tokens[1]);
+          const height = Number(tokens[2]);
+          const maxVal = Number(tokens[3]);
+
+          if (!['P2', 'P5'].includes(magic)) throw new Error('Unsupported PGM format');
+          if (!Number.isFinite(width) || !Number.isFinite(height) || !Number.isFinite(maxVal)) {
+            throw new Error('Invalid PGM metadata');
           }
-          
-          // Create ImageData from pixel data
-          const pixelData = uint8Array.slice(offset);
+
+          // For P5, data starts after a single whitespace following maxVal; our line-based
+          // reader left us at the start of pixel data already (since each header item was on a line)
+          let dataOffset = afterHeaderOffsetStart;
           const imageData = new ImageData(width, height);
-          
-          for (let i = 0; i < pixelData.length; i++) {
-            const value = pixelData[i];
-            const idx = i * 4;
-            imageData.data[idx] = value;     // R
-            imageData.data[idx + 1] = value; // G
-            imageData.data[idx + 2] = value; // B
-            imageData.data[idx + 3] = 255;   // A
+
+          if (magic === 'P5') {
+            const bytesPerSample = maxVal < 256 ? 1 : 2;
+            const expectedLen = width * height * bytesPerSample;
+            if (dataOffset + expectedLen > uint8Array.length) {
+              // If our offset is slightly off due to header whitespace, try to find first non-whitespace
+              while (dataOffset < uint8Array.length && (uint8Array[dataOffset] === 10 || uint8Array[dataOffset] === 13 || uint8Array[dataOffset] === 32 || uint8Array[dataOffset] === 9)) {
+                dataOffset++;
+              }
+            }
+            const pixels = uint8Array.subarray(dataOffset, dataOffset + expectedLen);
+            let p = 0;
+            for (let i = 0; i < width * height; i++) {
+              let value: number;
+              if (bytesPerSample === 1) {
+                value = pixels[p];
+                p += 1;
+              } else {
+                // Big endian per PGM spec
+                value = (pixels[p] << 8) | pixels[p + 1];
+                p += 2;
+              }
+              // Normalize to 0..255
+              const norm = Math.round((value / maxVal) * 255);
+              const v = metadata?.negate === 1 ? 255 - norm : norm;
+              const idx = i * 4;
+              imageData.data[idx] = v;
+              imageData.data[idx + 1] = v;
+              imageData.data[idx + 2] = v;
+              imageData.data[idx + 3] = 255;
+            }
+          } else {
+            // P2 ASCII: read remaining text, split by whitespace
+            const text = decoder.decode(uint8Array.subarray(dataOffset));
+            const values = text
+              .split(/\s+/)
+              .filter((t) => t.length && !t.startsWith('#'))
+              .map((t) => Number(t));
+            if (values.length < width * height) throw new Error('PGM pixel data too short');
+            for (let i = 0; i < width * height; i++) {
+              const norm = Math.round((values[i] / maxVal) * 255);
+              const v = metadata?.negate === 1 ? 255 - norm : norm;
+              const idx = i * 4;
+              imageData.data[idx] = v;
+              imageData.data[idx + 1] = v;
+              imageData.data[idx + 2] = v;
+              imageData.data[idx + 3] = 255;
+            }
           }
-          
+
           resolve(imageData);
         } catch (error) {
           reject(new Error('Failed to parse PGM file'));
@@ -143,42 +182,13 @@ export default function MapEnhancerApp() {
     });
   };
 
-  const parseYaml = (yamlText: string): MapMetadata => {
-    // Simple YAML parser for map metadata
-    const lines = yamlText.split('\n');
-    const metadata: any = {};
-    
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed && !trimmed.startsWith('#')) {
-        const [key, ...valueParts] = trimmed.split(':');
-        if (key && valueParts.length > 0) {
-          const value = valueParts.join(':').trim();
-          
-          // Parse different value types
-          if (value.startsWith('[') && value.endsWith(']')) {
-            // Array
-            metadata[key.trim()] = value.slice(1, -1).split(',').map(v => Number(v.trim()));
-          } else if (!isNaN(Number(value))) {
-            // Number
-            metadata[key.trim()] = Number(value);
-          } else {
-            // String
-            metadata[key.trim()] = value;
-          }
-        }
-      }
-    }
-    
-    return metadata as MapMetadata;
-  };
-
   const handleReset = () => {
     setFilters({
       blur: 0,
       dilation: 0,
       erosion: 0,
-      opening: 0
+      opening: 0,
+      threshold: null
     });
   };
 
@@ -216,14 +226,7 @@ export default function MapEnhancerApp() {
         image: `${mapData.fileName}_enhanced.png`
       };
 
-      const yamlContent = Object.entries(updatedMetadata)
-        .map(([key, value]) => {
-          if (Array.isArray(value)) {
-            return `${key}: [${value.join(', ')}]`;
-          }
-          return `${key}: ${value}`;
-        })
-        .join('\n');
+      const yamlContent = YAML.stringify(updatedMetadata);
 
       const yamlBlob = new Blob([yamlContent], { type: 'text/yaml' });
       const yamlUrl = URL.createObjectURL(yamlBlob);

@@ -14,6 +14,8 @@ export function MapCanvas({ mapData, filters, onProcessedImageChange }: MapCanva
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 });
+  const [compareEnabled, setCompareEnabled] = useState(false);
+  const [comparePos, setComparePos] = useState(0.5); // 0..1
 
   useEffect(() => {
     if (!mapData.originalImage || !canvasRef.current) return;
@@ -34,23 +36,50 @@ export function MapCanvas({ mapData, filters, onProcessedImageChange }: MapCanva
     ctx.translate(pan.x, pan.y);
     ctx.scale(zoom, zoom);
 
-    // Draw the processed image
+    // Prepare original and processed canvases
     const tempCanvas = document.createElement('canvas');
     tempCanvas.width = processedImage.width;
     tempCanvas.height = processedImage.height;
     const tempCtx = tempCanvas.getContext('2d');
-    if (tempCtx) {
+    const origCanvas = document.createElement('canvas');
+    origCanvas.width = mapData.originalImage.width;
+    origCanvas.height = mapData.originalImage.height;
+    const origCtx = origCanvas.getContext('2d');
+
+    if (tempCtx && origCtx) {
       tempCtx.putImageData(processedImage, 0, 0);
-      
+      origCtx.putImageData(mapData.originalImage, 0, 0);
+
       // Center the image
       const x = (canvas.width / zoom - processedImage.width) / 2;
       const y = (canvas.height / zoom - processedImage.height) / 2;
-      
-      ctx.drawImage(tempCanvas, x, y);
+
+      if (!compareEnabled) {
+        ctx.drawImage(tempCanvas, x, y);
+      } else {
+        // Draw processed first
+        ctx.drawImage(tempCanvas, x, y);
+        // Clip to left region and overlay original
+        const splitX = x + processedImage.width * comparePos;
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x, y, processedImage.width * comparePos, processedImage.height);
+        ctx.clip();
+        ctx.drawImage(origCanvas, x, y);
+        ctx.restore();
+
+        // Draw split line
+        ctx.strokeStyle = '#3b82f6';
+        ctx.lineWidth = 2 / zoom; // keep constant thickness under zoom
+        ctx.beginPath();
+        ctx.moveTo(splitX, y);
+        ctx.lineTo(splitX, y + processedImage.height);
+        ctx.stroke();
+      }
     }
 
     ctx.restore();
-  }, [mapData.originalImage, filters, zoom, pan, onProcessedImageChange]);
+  }, [mapData.originalImage, filters, zoom, pan, compareEnabled, comparePos, onProcessedImageChange]);
 
   const handleMouseMove = (e: React.MouseEvent) => {
     if (isDragging) {
@@ -115,6 +144,25 @@ export function MapCanvas({ mapData, filters, onProcessedImageChange }: MapCanva
           >
             Reset View
           </button>
+          <div className="flex items-center space-x-1 ml-2">
+            <label className="text-xs text-gray-600">Compare</label>
+            <input
+              type="checkbox"
+              checked={compareEnabled}
+              onChange={(e) => setCompareEnabled(e.target.checked)}
+            />
+          </div>
+          {compareEnabled && (
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.01}
+              value={comparePos}
+              onChange={(e) => setComparePos(Number(e.target.value))}
+              className="w-32"
+            />
+          )}
         </div>
       </div>
       
